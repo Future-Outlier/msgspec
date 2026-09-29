@@ -2,6 +2,14 @@
 
 ## Version 0.22.0 (2026-09-29)
 
+- **BREAKING**: Setting `gc=False` on a struct type that has a weakref slot,
+  whether from `weakref=True` or from a base class, now raises `ValueError`.
+  On CPython 3.12 and later the weakref slot is stored in a pre-header in
+  front of the instance, so releasing an instance of a `gc=False` type with
+  that slot corrupted memory, in most builds crashing the interpreter
+  outright. The combination worked on 3.10 and 3.11, and the restriction
+  applies there as well, so that the same class definition behaves the same
+  way on every supported version ({pr}`1207`).
 - Add `frozendict` support on Python 3.15+ ({pr}`1052`, {pr}`1105`).
 - Support passing a callable as `decimal_format` to `msgspec.json.Encoder` and
   `msgspec.msgpack.Encoder` for custom `Decimal` encoding ({pr}`978`).
