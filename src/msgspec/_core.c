@@ -54,12 +54,16 @@ ms_popcount(uint64_t i) {                            \
 }
 #endif
 
-/* In Python 3.12+, tp_dict is NULL for some core types, PyType_GetDict returns
- * a borrowed reference to the interpreter or cls mapping */
+/* In Python 3.12+, tp_dict is NULL for some core types, so PyType_GetDict is
+ * used instead. It returns a new reference, which must be released; before
+ * 3.12 the tp_dict slot is read directly and is borrowed, so there is nothing
+ * to release. */
 #if PY312_PLUS
 #define MS_GET_TYPE_DICT(a) PyType_GetDict(a)
+#define MS_RELEASE_TYPE_DICT(d) Py_XDECREF(d)
 #else
 #define MS_GET_TYPE_DICT(a) ((a)->tp_dict)
+#define MS_RELEASE_TYPE_DICT(d) ((void)(d))
 #endif
 
 #if PY313_PLUS
@@ -5809,7 +5813,24 @@ structmeta_get_module_ns(MsgspecState *mod, StructMetaInfo *info) {
 
 static int
 structmeta_collect_base(StructMetaInfo *info, MsgspecState *mod, PyObject *base) {
+    if (!PyType_Check(base)) {
+        /* CPython's metaclass conflict check will catch this issue earlier on,
+         * but it's still good to have this check in place in case that's ever
+         * removed */
+        PyErr_SetString(PyExc_TypeError, "All base classes must be types");
+        return -1;
+    }
+
     if ((PyTypeObject *)base == &StructMixinType) return 0;
+
+    /* A base that has not been readied yet, which a C extension can expose,
+     * has neither its type dict nor its inherited slots filled in. Readying
+     * a type owned by another extension can have side effects, so such a
+     * base is rejected instead. */
+    if (!PyType_HasFeature((PyTypeObject *)base, Py_TPFLAGS_READY)) {
+        PyErr_Format(PyExc_TypeError, "Base class %R is not ready", base);
+        return -1;
+    }
 
     if (((PyTypeObject *)base)->tp_weaklistoffset) {
         info->already_has_weakref = true;
@@ -5817,14 +5838,6 @@ structmeta_collect_base(StructMetaInfo *info, MsgspecState *mod, PyObject *base)
 
     if (((PyTypeObject *)base)->tp_dictoffset) {
         info->already_has_dict = true;
-    }
-
-    if (!PyType_Check(base)) {
-        /* CPython's metaclass conflict check will catch this issue earlier on,
-         * but it's still good to have this check in place in case that's ever
-         * removed */
-        PyErr_SetString(PyExc_TypeError, "All base classes must be types");
-        return -1;
     }
 
     if (!ms_is_struct_cls(base)) {
@@ -5835,12 +5848,22 @@ structmeta_collect_base(StructMetaInfo *info, MsgspecState *mod, PyObject *base)
         static const char *attrs[] = {"__init__", "__new__"};
         Py_ssize_t nattrs = 2;
         PyObject *tp_dict = MS_GET_TYPE_DICT((PyTypeObject *)base);
+        if (tp_dict == NULL) {
+            PyErr_Format(
+                PyExc_TypeError,
+                "Cannot read the attributes of base class %R",
+                base
+            );
+            return -1;
+        }
         for (Py_ssize_t i = 0; i < nattrs; i++) {
             if (PyDict_GetItemString(tp_dict, attrs[i]) != NULL) {
                 PyErr_Format(PyExc_TypeError, "Struct base classes cannot define %s", attrs[i]);
+                MS_RELEASE_TYPE_DICT(tp_dict);
                 return -1;
             }
         }
+        MS_RELEASE_TYPE_DICT(tp_dict);
         return 0;
     }
 

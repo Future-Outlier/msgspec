@@ -1009,6 +1009,27 @@ def test_struct_definition_does_not_leak_module_namespace(spelling):
     assert [ref() for ref in refs] == [None, None, None]
 
 
+def test_struct_definition_does_not_leak_non_struct_base_dict():
+    """Defining a struct must not retain the type dict of a non-struct base"""
+
+    class Sentinel:
+        pass
+
+    def define_struct_type():
+        sentinel = Sentinel()
+        Mixin = type("Mixin", (), {"sentinel": sentinel})
+
+        class Example(Mixin, Struct):
+            x: int
+
+        return weakref.ref(sentinel)
+
+    refs = [define_struct_type() for _ in range(3)]
+    gc.collect()
+
+    assert [ref() for ref in refs] == [None, None, None]
+
+
 def test_struct_gc_not_added_if_not_needed():
     """Structs aren't tracked by GC until/unless they reference a container type"""
 
